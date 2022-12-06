@@ -1,0 +1,32 @@
+---
+version: "3.7"
+
+services:
+  minter:
+    container_name: minter
+    image: jazzhandscmdb/openid_minter
+# turn off logs, possibly /tmp
+    read_only: true
+#    depends_on:
+#      - vault
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    expose:
+      - 8080
+    tmpfs:
+      - /run/apache2
+      - /tmp
+    volumes:
+      - ./:/var/www/token/
+      - ./keytab.www:/etc/krb5.keytab.www
+      - ./dbaal/:/var/lib/jazzhands/appauth-info
+      - /Volumes/vault/secret-ids/minter:/vault
+      - /opt/pkg/etc/openssl/certs:/etc/ssl/certs/
+    networks:
+      - testnet
+
+networks:
+  testnet:
