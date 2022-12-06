@@ -1,0 +1,31 @@
+---
+version: "3.7"
+
+services:
+  minter:
+    container_name: minter
+    image: jazzhandscmdb/jazzhands_openid_minter
+    read_only: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080"
+    expose:
+      - 8080
+    tmpfs:
+      - /run/apache2
+      - /tmp
+    environment:
+      AuthName: JAZZHANDS.NET
+      DefaultKrbRealm: JAZZHANDS.NET
+    volumes:
+      - /etc/keytab.www:/etc/krb5.keytab.www
+      - /var/lib/jazzhands//ppauthal-info/oauth-jwt-minter.json:/var/lib/jazzhands/appauth-info/oauth-jwt-minter.json
+      - /var/lib/vault/jazzhands-minter-production-consumer:/vault
+      - /opt/pkg/etc/openssl/certs:/etc/ssl/certs/
+    networks:
+      - testnet
+
+networks:
+  testnet:
