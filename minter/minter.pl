@@ -155,7 +155,7 @@ sub get_jwt_signing_key {
 	# This means vault
 	#
 	if ( $hr->{external_id} ) {
-		my $r = JazzHands::AppAuthAL::find_and_parse_auth('oauth-jwt-minter')
+		my $r = JazzHands::AppAuthAL::find_and_parse_auth('jazzhands-oauth-jwt-minter')
 		  || die $self->graceful_error(
 			"Temporary Issues retrieving signing key");
 
@@ -347,7 +347,7 @@ sub dbh($) {
 	my $self = shift @_;
 	if ( !exists( $self->{_dbh} ) ) {
 		my $dbh =
-		  JazzHands::DBI->connect( 'oauth-jwt-minter',
+		  JazzHands::DBI->connect( 'jazzhands-oauth-jwt-minter',
 			{ AutoCommit => 0, PrintError => 1 } );
 		if ( !$dbh ) {
 			$self->log( 'fatal', 'database error: $%s',
@@ -390,7 +390,8 @@ sub graceful_error($$) {
 sub authentication_dance($) {
 	my $self = shift @_;
 
-	my $cgi = $self->cgi;
+	my $cgi    = $self->cgi;
+	my $params = {};
 
 	#
 	# XXX - really need to sort this out by input scopes or something?
@@ -405,7 +406,23 @@ sub authentication_dance($) {
 	# than the rfc specifies.   Except in the case of acting as another user,
 	# which is an added parameter
 	#
-	my $gt = $cgi->param('grant_type');
+	if ( $ENV{'CONTENT_TYPE'} eq 'application/json' ) {
+		my $j = new JSON;
+		$params = $j->decode( scalar $cgi->param('POSTDATA') );
+	} elsif ( $ENV{'CONTENT_TYPE'} eq 'application/x-www-form-urlencoded' ) {
+		for my $t (qw(grant_type nonce scope username password on_behalf_of)) {
+			if ( my $v = $cgi->param($t) ) {
+				$params->{$t} = $v;
+			}
+		}
+	} else {
+		die $self->graceful_error( {
+			error             => 'invalid_request',
+			error_description => "malformed request"
+		} );
+	}
+
+	my $gt = $params->{'grant_type'};
 
 	if ( !$gt ) {
 		die $self->graceful_error( {
@@ -429,7 +446,7 @@ sub authentication_dance($) {
 	#
 	# This really needs to be properly implemented and checked, but for now...
 	#
-	if ( my $nonce = $cgi->param('nonce') ) {
+	if ( my $nonce = $params->{'nonce'} ) {
 		$jwt->{nonce} = $nonce;
 	} else {
 		die $self->graceful_error( {
@@ -442,7 +459,7 @@ sub authentication_dance($) {
 	# they expect the token to be used for.  This endpoint only issues JWTs for
 	# one and only one scope.  Validity of scope is not checked.  Invalid
 	# scopes will just error out as though things aren't permitted.
-	my $scope = $cgi->param('scope');
+	my $scope = $params->{'scope'};
 	if ( !$scope ) {
 		die $self->graceful_error( {
 			error             => 'invalid_request',
@@ -467,7 +484,7 @@ sub authentication_dance($) {
 	#
 	if ( $gt eq 'client_credentials' ) {
 		if ( !$cgi->remote_user() ) {
-			if ( $cgi->param('password') ) {
+			if ( $params->{'password'} ) {
 				die $self->graceful_error( {
 					error             => 'invalid_request',
 					error_description =>
@@ -540,6 +557,9 @@ sub authentication_dance($) {
 			}
 			$maxlifetime = $hr->{max_token_lifetime};
 		} else {
+			my $j = new JSON;
+			$self->log( 'fatal', 'Not permitted: negotiate %s',
+				$j->encode($params) );
 			die $self->graceful_error( {
 				error             => 'access_denied',
 				error_description =>
@@ -547,8 +567,8 @@ sub authentication_dance($) {
 			} );
 		}
 	} elsif ( $gt eq 'password' ) {
-		my $username = $cgi->param('username');
-		my $password = $cgi->param('password');
+		my $username = $params->{'username'};
+		my $password = $params->{'password'};
 		if ( !$username || !$password ) {
 			die $self->graceful_error( {
 				error             => 'invalid_request',
@@ -566,6 +586,9 @@ sub authentication_dance($) {
 				$role    = $hr->{login};
 				$subject = $authduser = $username;
 			} else {
+				my $j = new JSON;
+				$self->log( 'fatal', 'Not permitted: password %s',
+					$j->encode($params) );
 				die $self->graceful_error( {
 					error             => 'access_denied',
 					error_description =>
@@ -614,7 +637,7 @@ sub authentication_dance($) {
 	$role    = $authduser if ( !$role );
 	$subject = $role      if ( !$subject );
 
-	if ( my $fakeit = $cgi->param('on_behalf_of') ) {
+	if ( my $fakeit = $params->{'on_behalf_of'} ) {
 		if ( $fakeit =~ s,^(host|device)/,, ) {
 			if ( $self->can_impersonate_device( $scope, $authduser, $fakeit ) )
 			{
@@ -736,7 +759,7 @@ sub mint_jwt($) {
 	if ( exists( $jwtbase->{role} ) ) {
 		$rolestr = sprintf " for role %s", $jwtbase->{role};
 	}
-	$self->log( 'info', "Issue %s to %s%s%s scope %s until %s",
+	$self->log( 'info', "Issued: %s to %s%s%s scope %s until %s",
 		$jwtbase->{jti}, $jwtbase->{sub}, $behalf, $rolestr, $jwtbase->{aud},
 		$jwtbase->{exp} );
 

@@ -21,7 +21,7 @@ services:
       DefaultKrbRealm: JAZZHANDS.NET
     volumes:
       - /etc/keytab.www:/etc/krb5.keytab.www
-      - /var/lib/jazzhands//ppauthal-info/oauth-jwt-minter.json:/var/lib/jazzhands/appauth-info/oauth-jwt-minter.json
+      - /var/lib/jazzhands/appauthal-info/jazzhands-oauth-jwt-minter.json:/var/lib/jazzhands/appauth-info/jazzhands-oauth-jwt-minter.json
       - /var/lib/vault/jazzhands-minter-production-consumer:/vault
       - /opt/pkg/etc/openssl/certs:/etc/ssl/certs/
     networks:

@@ -125,7 +125,7 @@ FROM service,  port_range,
         (SELECT dns_record_id
 		FROM dns_record
 		JOIN dns_domain USING (dns_domain_id)
-		WHERE dns_name = 'drt-api'
+		WHERE dns_name = 'api'
 		AND dns_domain_name = 'example.org'
 	) x
 WHERE service_type = 'network' AND service_name = 'testinator-api'
@@ -217,7 +217,7 @@ that forwards into the container, although this is not strictly necessary.
 2. The docker-compose.yaml file describes how to set it up.
     * Volumes mounted from outside onto paths inside the container:
         1. `/etc/keytab.www` - keytab with HTTP/fqdn for the possible ways the service can be connected to.  This is used for any users (and devices`) that use Kerberos to authenticate
-        2. `/var/lib/jazzhands/appauthal-info/oauth-jwt-minter.json` - DBAAL file for the `app_jazzhands_openid_jwt_minter` connection setup in the next steps.
+        2. `/var/lib/jazzhands/appauthal-info/jazzhands-oauth-jwt-minter.json` - DBAAL file for the `app_jazzhands_openid_jwt_minter` connection setup in the next steps.
         3. `/vault` - contains files, role-id and secret-id that are refreshed periodically to allow for connecting to vault to retrieve private keys (or anything else)
         4. `/etc/ssl/certs` - where various things expect trusted certificates to live for validating any https connections
 
@@ -270,7 +270,7 @@ Default lifetime for a bearer token is 3600 seconds (one hour).
     * `account_collection_id` - who it applies to
     * `property_value_json` - with the following keys, only method is required:
         * *method* can be `negotiate` or `password` . Negotiate will force Kerberos using the `client_credentials` type, `password` will look up the user's blowfish password in `account_password`
-        * *prefix*, optional, is the database username that should be prepended to the user  as the user to act as.  Such as "prst_."  When left out, the user's role is assumed.
+        * *prefix*, optional, is the database username that should be prepended to the user  as the user to act as.  Such as "pgrst_."  When left out, the user's role is assumed.
         * *suffix*, optional, is the database username that should be appended to the user  as the user to act as.  Such as "_pgrst."  When left out, the user's role is assumed.
         * *max_token_lifetime* - optional, number of seconds a token can be issued for to the user
 * property `jazzhands-openid:permit-device-authentication` - defines what devices are allowed to authenticate to the API using their Kerberos principal and what role they are to assume
@@ -516,8 +516,18 @@ Document:
 
 #### JazzHands Logging
 
-Need to flesh this out and finish.  Basically, logging all the minted
-tokens such that they get stored somewhere centrally.
+minter users the functions within the JazzHands::Common::Logging module to
+log successful authorizations, not permitted authentications. and some
+fatal errors.  Some are logged to stderr.
+
+The default container will log everything to stderr, and log interesting
+authorization related things to the LOG_AUTH facility.   If /dev/log is
+mounted inside the container, it will log to the local host.
+
+The `/etc/jazzhands/minter_logging.cfg` file inside the container can be
+replaced and trigger logging to go elsewhere.  Those details can be found
+in the JazzHands::Common::Logging module (those are the arguments to the
+initialization function) but are generally left as an exercise for the reader.
 
 ## Database Configuration
 
