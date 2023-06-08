@@ -73,6 +73,17 @@ sub new {
 		}
 	}
 
+	if ( $opt->{encrypt_password} ) {
+		$self->{_encrypt_password} = $opt->{encrypt_password};
+	} elsif ( my $a = $ENV{'JAZZHANDS_ENCRYPT_PASSWORD'} ) {
+		if ( $a =~ /^(yes|true)$/i ) {
+			$self->{_encrypt_password} = 1;
+		} elsif ( $a !~ /^(no|false)$/i ) {
+			die $self->graceful_error(
+				"failed to configure password encryption.");
+		}
+	}
+
 	$self->{_cgi} = new CGI;
 	$self;
 }
@@ -155,7 +166,8 @@ sub get_jwt_signing_key {
 	# This means vault
 	#
 	if ( $hr->{external_id} ) {
-		my $r = JazzHands::AppAuthAL::find_and_parse_auth('jazzhands-oauth-jwt-minter')
+		my $r = JazzHands::AppAuthAL::find_and_parse_auth(
+			'jazzhands-oauth-jwt-minter')
 		  || die $self->graceful_error(
 			"Temporary Issues retrieving signing key");
 
@@ -199,8 +211,7 @@ sub authenticate_account($$$) {
 	my $accounthash = shift @_;
 	my $password    = shift @_;
 
-	my $account_id  = $accounthash->{account_id};
-	my $encryptedpw = $self->_db_session_encrypt_argument($password);
+	my $account_id = $accounthash->{account_id};
 
 	my $dbh = $self->dbh;
 	my $sth = $dbh->prepare_cached(
@@ -214,9 +225,15 @@ sub authenticate_account($$$) {
         }
 	) || die $dbh->errstr;
 
-	$sth->bind_param( ':acid',   $account_id )        || die $sth->errstr;
-	$sth->bind_param( ':pwd',    $encryptedpw )       || die $sth->errstr;
-	$sth->bind_param( ':method', 'aes-cbc/pad:pkcs' ) || die $sth->errstr;
+	$sth->bind_param( ':acid', $account_id ) || die $sth->errstr;
+	if ( !$self->{_encrypt_password} ) {
+		$sth->bind_param( ':pwd',    $password ) || die $sth->errstr;
+		$sth->bind_param( ':method', 'none' )    || die $sth->errstr;
+	} else {
+		my $encryptedpw = $self->_db_session_encrypt_argument($password);
+		$sth->bind_param( ':pwd',    $encryptedpw )       || die $sth->errstr;
+		$sth->bind_param( ':method', 'aes-cbc/pad:pkcs' ) || die $sth->errstr;
+	}
 
 	if ( !( $sth->execute() ) ) {
 		my $state = $dbh->state;
@@ -346,9 +363,10 @@ sub cgi($) {
 sub dbh($) {
 	my $self = shift @_;
 	if ( !exists( $self->{_dbh} ) ) {
-		my $dbh =
-		  JazzHands::DBI->connect( 'jazzhands-oauth-jwt-minter',
-			{ AutoCommit => 0, PrintError => 1 } );
+		my $dbh = JazzHands::DBI->connect(
+			'jazzhands-oauth-jwt-minter',
+			{ AutoCommit => 0, PrintError => 1 }
+		);
 		if ( !$dbh ) {
 			$self->log( 'fatal', 'database error: $%s',
 				$JazzHands::DBI::errstr );
@@ -406,9 +424,20 @@ sub authentication_dance($) {
 	# than the rfc specifies.   Except in the case of acting as another user,
 	# which is an added parameter
 	#
-	if ( $ENV{'CONTENT_TYPE'} eq 'application/json' ) {
+	if ( !$ENV{'CONTENT_TYPE'} ) {
+		die $self->graceful_error( {
+			error             => 'invalid_request',
+			error_description => "no form arguments"
+		} );
+	} elsif ( $ENV{'CONTENT_TYPE'} eq 'application/json' ) {
 		my $j = new JSON;
-		$params = $j->decode( scalar $cgi->param('POSTDATA') );
+		eval { $params = $j->decode( scalar $cgi->param('POSTDATA') ); };
+		if ($@) {
+			die $self->graceful_error( {
+				error             => 'invalid_request',
+				error_description => "invalid form arguments"
+			} );
+		}
 	} elsif ( $ENV{'CONTENT_TYPE'} eq 'application/x-www-form-urlencoded' ) {
 		for my $t (qw(grant_type nonce scope username password on_behalf_of)) {
 			if ( my $v = $cgi->param($t) ) {
@@ -418,7 +447,7 @@ sub authentication_dance($) {
 	} else {
 		die $self->graceful_error( {
 			error             => 'invalid_request',
-			error_description => "malformed request"
+			error_description => "malformed content type"
 		} );
 	}
 
@@ -444,7 +473,7 @@ sub authentication_dance($) {
 	my $jwt = {};
 
 	#
-	# This really needs to be properly implemented and checked, but for now...
+	# for client validation
 	#
 	if ( my $nonce = $params->{'nonce'} ) {
 		$jwt->{nonce} = $nonce;
@@ -558,6 +587,7 @@ sub authentication_dance($) {
 			$maxlifetime = $hr->{max_token_lifetime};
 		} else {
 			my $j = new JSON;
+			$params->{'password'} = '<REDACTED>' if ( $params->{'password'} );
 			$self->log( 'fatal', 'Not permitted: negotiate %s',
 				$j->encode($params) );
 			die $self->graceful_error( {
@@ -587,6 +617,8 @@ sub authentication_dance($) {
 				$subject = $authduser = $username;
 			} else {
 				my $j = new JSON;
+				$params->{'password'} = '<REDACTED>'
+				  if ( $params->{'password'} );
 				$self->log( 'fatal', 'Not permitted: password %s',
 					$j->encode($params) );
 				die $self->graceful_error( {
@@ -737,6 +769,7 @@ sub mint_jwt($) {
 	my $key = $self->get_jwt_signing_key($scope);
 	if ( !$key ) {
 		$self->log(
+			'fatal',
 			"There appears to be no JWT signing key in the database for scope %s",
 			$scope
 		);
