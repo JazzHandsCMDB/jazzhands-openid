@@ -606,7 +606,7 @@ sub authentication_dance($) {
 			} );
 		}
 
-		if ( !(
+		if ( (
 			my $hr = $self->process_authentication_method(
 				$username, 'password', $scope
 			)
