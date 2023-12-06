@@ -773,7 +773,8 @@ sub mint_jwt($) {
 			"There appears to be no JWT signing key in the database for scope %s",
 			$scope
 		);
-		die $self->graceful_error("Issue getting the JWT signing key");
+		die $self->graceful_error(
+			sprintf("Issue getting the JWT signing key for scope %s", $scope));
 	}
 
 	my $j      = new JSON;
