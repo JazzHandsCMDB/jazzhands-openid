@@ -76,7 +76,7 @@ use strict;
 use warnings;
 use JazzHands::Vault;
 use JazzHands::DBI;
-use DBI;
+use DBI qw(:sql_types);
 use JSON;
 use FileHandle;
 use File::Temp qw(tempfile);
@@ -345,9 +345,9 @@ sub add_signing_key_to_service($$$) {
 			property_type, property_name,
 			service_version_collection_id, property_value_private_key_id
 		) SELECT 'jazzhands-openid', 'jwt-signer',
-			service_version_collection_id, :pkid
+			service_version_collection_id, (:pkid)::integer
 		FROM service_version_collection
-		WHERE service_version_collection_name = :service
+		WHERE service_version_collection_name = concat_ws(':', 'network', :service::text)
 		AND service_version_collection_type = 'current-services'
 		RETURNING *
 	} );
@@ -360,8 +360,10 @@ sub add_signing_key_to_service($$$) {
 	$sth->bind_param( ':service', $service ) || die $sth->errstr;
 	$sth->bind_param( ':pkid',    $pkid )    || die $sth->errstr;
 
+	warn "inserdting $service, $pkid";
+
 	if ( !$sth->execute() ) {
-		$errstr = "exectue: " . $sth->errstr;
+		$errstr = "execute: " . $sth->errstr;
 		return undef;
 	}
 	my $hr = $sth->fetchrow_hashref;
@@ -627,7 +629,7 @@ die sprintf "Unknown subcommand %s", $subcommand
 my $work = new Worker(
 	dbhost      => $dbhost,
 	database    => $database,
-	vaultserver => $vaultserver,
+	vaultserver => $vaultserver || $ENV{'VAULT_ADDR'},
 	authapp     => $authapp,
 ) || die $Worker::errstr;
 
