@@ -27,7 +27,7 @@ use parent 'JazzHands::Common';
 sub new {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
-	my %args = @_;
+	my %args  = @_;
 
 	# Call parent constructor
 	my $self = $class->SUPER::new();
@@ -37,9 +37,10 @@ sub new {
 	my $h   = $args{h}   or die "h parameter is required";
 
 	# Optional arguments
-	my $key_path         = $args{key_path}         || '/www/auth/dance.key';
-	my $clients_file     = $args{clients_file}     || '/www/auth/valid-clients.json';
+	my $key_path     = $args{key_path}     || '/www/auth/dance.key';
+	my $clients_file = $args{clients_file} || '/www/auth/valid-clients.json';
 	my $encrypt_password = $args{encrypt_password};
+	my $debug            = $args{debug};
 
 	# Load RSA key
 	my $fh = new FileHandle($key_path);
@@ -73,9 +74,10 @@ sub new {
 	$self->{key_path}     = $key_path;
 	$self->{clients}      = $clients;
 	$self->{clients_file} = $clients_file;
+	$self->{debug}        = $debug;
 
 	# Handle encrypt_password option
-	if ( $encrypt_password ) {
+	if ($encrypt_password) {
 		$self->{_encrypt_password} = $encrypt_password;
 	} elsif ( my $a = $ENV{'JAZZHANDS_ENCRYPT_PASSWORD'} ) {
 		if ( $a =~ /^(yes|true)$/i ) {
@@ -144,7 +146,7 @@ sub generate_output_login_form {
 							$h->h1( { style => 'margin: 0;' }, ['🔐 Sign In'] ),
 							$h->p(
 								{ style => 'margin: 5px 0 0 0; opacity: 0.9;' },
-								['OpenID Connect Authorization']
+								['OpenID Connect']
 							)
 						]
 					),
@@ -252,14 +254,6 @@ sub generate_output_login_form {
 													class => 'btn-primary'
 												},
 												['Sign In & Authorize']
-											),
-											$h->button( {
-													type  => 'submit',
-													name  => 'action',
-													value => 'deny',
-													class => 'btn-secondary'
-												},
-												['Deny']
 											)
 										]
 									)
@@ -507,6 +501,7 @@ sub generate_authorization_code {
 }
 
 # Method to generate already authenticated page HTML (SSO flow)
+# If debug is not set, this returns undef to signal immediate redirect
 sub generate_output_already_authenticated {
 	my ( $self, $params, $username, $redirect_url ) = @_;
 	my $cgi       = $self->{cgi};
@@ -514,9 +509,12 @@ sub generate_output_already_authenticated {
 	my $client_id = $params->{client_id};
 	my $scope     = $params->{scope};
 
+	# If debug is not set, return undef to signal immediate redirect
+	return undef unless ( $self->{debug} && $self->{debug} != 0 );
+
 	my $html = $h->html( [
 		$h->head( [
-			$h->title( ['OpenID Connect Authorization'] ),
+			$h->title( ['OpenID Connect'] ),
 			$h->meta(
 				{ 'http-equiv' => 'refresh', content => "3;url=$redirect_url" }
 			),
@@ -573,6 +571,7 @@ sub generate_output_already_authenticated {
 }
 
 # Method to generate success page HTML
+# If debug is not set, this returns undef to signal immediate redirect
 sub generate_output_success_page {
 	my ( $self, $params, $redirect_url, $code ) = @_;
 	my $cgi          = $self->{cgi};
@@ -582,9 +581,12 @@ sub generate_output_success_page {
 	my $scope        = $params->{scope};
 	my $username     = $params->{username};
 
+	# If debug is not set, return undef to signal immediate redirect
+	return undef unless ( $self->{debug} && $self->{debug} != 0 );
+
 	my $html = $h->html( [
 		$h->head( [
-			$h->title( ['OpenID Connect Authorization'] ),
+			$h->title( ['OpenID Connect'] ),
 			$h->meta(
 				{ 'http-equiv' => 'refresh', content => "3;url=$redirect_url" }
 			),
@@ -893,6 +895,15 @@ elsif ( !$params->{action} ) {
 
 		$output = $oidc->generate_output_already_authenticated( $params,
 			$cookie_username, $redirect_url );
+
+		# If output is undef (debug not set), redirect immediately
+		if ( !defined $output ) {
+			print $cgi->redirect(
+				-uri    => $redirect_url,
+				-status => 302
+			);
+			exit;
+		}
 	} else {
 
 		# No cookie or expired - show login form
@@ -945,6 +956,16 @@ elsif ($params->{action} eq 'login'
 		# Generate success page
 		$output = $oidc->generate_output_success_page( $params, $redirect_url,
 			$authorization_code );
+
+		# If output is undef (debug not set), redirect immediately
+		if ( !defined $output ) {
+			print $cgi->redirect(
+				-uri    => $redirect_url,
+				-cookie => $cookie,
+				-status => 302
+			);
+			exit;
+		}
 	} else {
 
 		# Authentication failed - show login form with error

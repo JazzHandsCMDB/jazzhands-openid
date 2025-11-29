@@ -212,10 +212,9 @@ sub handle_token_request {
 		);
 		my $j = new JSON;
 		my $p = $j->encode( {
-				"error"           => 'invalid_client',
-				error_description => "invalid_client"
-			}
-		);
+			"error"           => 'invalid_client',
+			error_description => "invalid_client"
+		} );
 		print $p, "\n";
 		exit 0;
 	}
