@@ -15,6 +15,10 @@ use JSON;
 use Crypt::PK::RSA;
 use Crypt::JWT qw(encode_jwt decode_jwt);
 use HTML::Tiny;
+use Crypt::CBC;
+use Crypt::Rijndael;
+use MIME::Base64;
+use JazzHands::DBI;
 use JazzHands::Common qw(:internal);
 
 use parent 'JazzHands::Common';
@@ -23,13 +27,19 @@ use parent 'JazzHands::Common';
 sub new {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
-	my ( $cgi, $h, $key_path ) = @_;
+	my %args = @_;
 
 	# Call parent constructor
-	my $self = $class->SUPER::new(@_);
+	my $self = $class->SUPER::new();
 
-	# Default key path if not provided
-	$key_path ||= '/www/auth/dance.key';
+	# Required arguments
+	my $cgi = $args{cgi} or die "cgi parameter is required";
+	my $h   = $args{h}   or die "h parameter is required";
+
+	# Optional arguments
+	my $key_path         = $args{key_path}         || '/www/auth/dance.key';
+	my $clients_file     = $args{clients_file}     || '/www/auth/valid-clients.json';
+	my $encrypt_password = $args{encrypt_password};
 
 	# Load RSA key
 	my $fh = new FileHandle($key_path);
@@ -40,10 +50,40 @@ sub new {
 	my $key = join( "", $fh->getlines() );
 	$fh->close;
 
-	$self->{cgi}      = $cgi;
-	$self->{h}        = $h;
-	$self->{key}      = $key;
-	$self->{key_path} = $key_path;
+	# Load valid clients from JSON file
+	my $clients_fh = new FileHandle($clients_file);
+	unless ($clients_fh) {
+		$errstr = "Unable to open clients file: $clients_file";
+		return undef;
+	}
+	my $clients_json = join( "", $clients_fh->getlines() );
+	$clients_fh->close;
+
+	my $j = new JSON;
+	my $clients;
+	eval { $clients = $j->decode($clients_json); };
+	if ($@) {
+		$errstr = "Failed to parse clients file: $@";
+		return undef;
+	}
+
+	$self->{cgi}          = $cgi;
+	$self->{h}            = $h;
+	$self->{key}          = $key;
+	$self->{key_path}     = $key_path;
+	$self->{clients}      = $clients;
+	$self->{clients_file} = $clients_file;
+
+	# Handle encrypt_password option
+	if ( $encrypt_password ) {
+		$self->{_encrypt_password} = $encrypt_password;
+	} elsif ( my $a = $ENV{'JAZZHANDS_ENCRYPT_PASSWORD'} ) {
+		if ( $a =~ /^(yes|true)$/i ) {
+			$self->{_encrypt_password} = 1;
+		} elsif ( $a !~ /^(no|false)$/i ) {
+			die "Failed to configure password encryption.";
+		}
+	}
 
 	return bless $self, $class;
 }
@@ -53,16 +93,10 @@ sub validate_client {
 	my ( $self, $params ) = @_;
 	my $client_id = $params->{client_id};
 
-	# Define registered clients
+	# Check if client_id exists in loaded clients
 	# At the authorization endpoint, we only check if the client_id is registered
 	# No client_secret validation here - that happens at the token endpoint
-	my %clients = (
-		'f20f5025-4383-4db0-83f7-bc20931fb66e' => 1,
-
-		# Add more clients here as needed
-	);
-
-	return exists $clients{$client_id};
+	return exists $self->{clients}->{$client_id};
 }
 
 # Method to generate login form HTML
@@ -228,15 +262,6 @@ sub generate_output_login_form {
 												['Deny']
 											)
 										]
-									),
-									$h->div(
-										{ class => 'demo-note' },
-										[
-											$h->strong( ['⚠️ Demo Mode:'] ),
-											' Use any username with password ',
-											$h->code( ['demo123'] ),
-											' to authenticate.'
-										]
 									)
 								]
 							)
@@ -256,14 +281,121 @@ sub authenticate_user {
 	my $username = $params->{username};
 	my $password = $params->{password};
 
-	# Simple demo authentication
-	# In production, check against a database with hashed passwords
-	# For demo purposes: accept any username with password "demo123"
-	return ( $username && $password eq 'demo123' );
+	# Authenticate against database
+	return 0 unless ( $username && $password );
 
-	# Production example (commented):
-	# my $hashed_password = get_password_hash_from_db($username);
-	# return verify_password($password, $hashed_password);
+	my $u = $self->get_account($username);
+	return 0 unless $u;
+
+	return $self->authenticate_account( $u, $password );
+}
+
+# Database connection method
+sub dbh($) {
+	my $self = shift @_;
+	if ( !exists( $self->{_dbh} ) ) {
+		my $dbh = JazzHands::DBI->connect(
+			'jazzhands-oauth-jwt-minter',
+			{ AutoCommit => 0, PrintError => 1 }
+		);
+		if ( !$dbh ) {
+			die "Database connection failed: $JazzHands::DBI::errstr";
+		}
+		$self->{_dbh} = $dbh;
+	}
+	$self->{_dbh};
+}
+
+# Encrypt argument for database session
+sub _db_session_encrypt_argument($$) {
+	my $self     = shift;
+	my $encodeme = shift;
+
+	my $dbh = $self->dbh;
+
+	# get a per-session key for encrypting arguments to the db
+	my $sth = $dbh->prepare(
+		qq{
+			SELECT obfuscation_utils.get_session_secret();
+        }
+	) || die $dbh->errstr;
+	$sth->execute || die $sth->errstr;
+	my ($key) = $sth->fetchrow_array();
+	$sth->finish;
+
+	my $c  = Crypt::Rijndael->new($key);
+	my $iv = Crypt::CBC->random_bytes(16);
+
+	my $cipher = Crypt::CBC->new(
+		-cipher => $c,
+		-iv     => $iv,
+		-header => 'none',
+	);
+
+	my $enc = $cipher->encrypt($encodeme);
+	join( "-", encode_base64($iv), encode_base64($enc) );
+}
+
+# Get account from database
+sub get_account($$) {
+	my $self  = shift @_;
+	my $login = shift @_;
+
+	my $dbh = $self->dbh;
+
+	my $sth = $dbh->prepare_cached(
+		qq{
+		SELECT	account_id, login, account_type
+		FROM	account
+		WHERE	login = ?
+	}
+	) || die "error setting up query";
+
+	$sth->execute($login) || die "running account query";
+	my $hr = $sth->fetchrow_hashref;
+	$sth->finish;
+	$hr;
+}
+
+# Authenticate account against database
+sub authenticate_account($$$) {
+	my $self        = shift @_;
+	my $accounthash = shift @_;
+	my $password    = shift @_;
+
+	my $account_id = $accounthash->{account_id};
+
+	my $dbh = $self->dbh;
+	my $sth = $dbh->prepare_cached(
+		q{
+			SELECT account_password_manip.authenticate_account(
+				account_id		:= :acid,
+				password		:= :pwd,
+				encode_method	:= :method,
+				raiseexception	:= false
+			);
+        }
+	) || die $dbh->errstr;
+
+	$sth->bind_param( ':acid', $account_id ) || die $sth->errstr;
+	if ( !$self->{_encrypt_password} ) {
+		$sth->bind_param( ':pwd',    $password ) || die $sth->errstr;
+		$sth->bind_param( ':method', 'none' )    || die $sth->errstr;
+	} else {
+		my $encryptedpw = $self->_db_session_encrypt_argument($password);
+		$sth->bind_param( ':pwd',    $encryptedpw )       || die $sth->errstr;
+		$sth->bind_param( ':method', 'aes-cbc/pad:pkcs' ) || die $sth->errstr;
+	}
+
+	if ( !( $sth->execute() ) ) {
+		my $state = $dbh->state;
+		my $msg   = $dbh->errstr;
+		die "Temporary issues authenticating user: $msg";
+	}
+
+	my ($boolean) = $sth->fetchrow_array;
+	$sth->finish;
+	($boolean) ? 1 : 0;
 }
 
 # Method to generate session cookie
@@ -632,6 +764,17 @@ sub generate_output_error {
 	}
 }
 
+# Cleanup database connection on object destruction
+sub DESTROY {
+	my $self = shift @_;
+
+	if ( exists( $self->{_dbh} ) ) {
+		$self->{_dbh}->rollback;
+		$self->{_dbh}->disconnect;
+		delete( $self->{_dbh} );
+	}
+}
+
 1;
 
 package main;
@@ -648,7 +791,10 @@ my $cgi = CGI->new;
 my $h = HTML::Tiny->new;
 
 # Create OpenIDCode object
-my $oidc = OpenIDCode->new( $cgi, $h );
+my $oidc = OpenIDCode->new(
+	cgi => $cgi,
+	h   => $h,
+);
 unless ($oidc) {
 	print $cgi->header(
 		-type    => 'text/html',
