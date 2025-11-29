@@ -134,7 +134,46 @@ sub generate_output_login_form {
 				rel  => 'stylesheet',
 				type => 'text/css',
 				href => '/login.css'
-			} )
+			} ),
+			$h->script( { type => 'text/javascript' }, [q{
+(function() {
+	// Get the current pathname (e.g., /oauth/code)
+	var currentPath = window.location.pathname;
+
+	// Check if we're already on the negotiate path
+	if (currentPath.indexOf('/negotiate/') === 0) {
+		// Already on negotiate path, don't redirect
+		return;
+	}
+
+	// Get the current origin (protocol + hostname + port)
+	var origin = window.location.origin;
+	// Build the negotiate endpoint URL
+	var negotiateUrl = origin + '/negotiate/';
+
+	// Try to fetch the negotiate endpoint
+	fetch(negotiateUrl, {
+		method: 'GET',
+		credentials: 'include',
+		redirect: 'manual'
+	})
+	.then(function(response) {
+		// If the negotiate endpoint is accessible (status 200-399)
+		if (response.ok || (response.status >= 200 && response.status < 400)) {
+			// Build the new URL under /negotiate/
+			var newUrl = origin + '/negotiate' + currentPath + window.location.search;
+			// Redirect to the negotiate version of this page
+			window.location.href = newUrl;
+		}
+		// If not accessible, do nothing and let the page load normally
+	})
+	.catch(function(error) {
+		// If there's an error (network error, CORS, etc.), do nothing
+		// and let the page load normally
+		console.log('Negotiate endpoint not available:', error);
+	});
+})();
+}] )
 		] ),
 		$h->body( [
 			$h->div(
@@ -847,6 +886,72 @@ elsif ( $params->{response_type} ne 'code' ) {
 elsif ( !$oidc->validate_client($params) ) {
 	$output = $oidc->generate_output_error( $params, 'invalid_client',
 		'Unknown or invalid client_id' );
+}
+
+# Check for GSS_NAME environment variable (Kerberos/SPNEGO authentication)
+elsif ( !$params->{action} && $ENV{'GSS_NAME'} ) {
+	my $remote_user = $ENV{'GSS_NAME'};
+
+	# Strip off everything after @ sign if present
+	$remote_user =~ s/@.*$//;
+
+	# Look up the account
+	my $account = $oidc->get_account($remote_user);
+
+	if ($account) {
+		# User is authenticated via GSS_NAME
+		$params->{username} = $remote_user;
+
+		# Generate session cookie
+		my $cookie_value = $oidc->generate_session_cookie($remote_user);
+		$cookie = $cgi->cookie(
+			-name     => 'oauth_session',
+			-value    => $cookie_value,
+			-expires  => '+18h',
+			-path     => '/',
+			-secure   => 1,
+			-httponly => 1,
+			-samesite => 'Lax'
+		);
+
+		# Generate authorization code
+		my $authorization_code = $oidc->generate_authorization_code($params);
+
+		# Build redirect URL with authorization code
+		my $separator = ( $params->{redirect_uri} =~ /\?/ ) ? '&' : '?';
+		my $redirect_url =
+			$params->{redirect_uri}
+		  . $separator . "code="
+		  . $cgi->escape($authorization_code);
+
+		# Add state parameter if provided (REQUIRED for security)
+		if ( $params->{state} ) {
+			$redirect_url .= "&state=" . $cgi->escape( $params->{state} );
+		}
+
+		# Add nonce parameter if provided
+		if ( $params->{nonce} ) {
+			$redirect_url .= "&nonce=" . $cgi->escape( $params->{nonce} );
+		}
+
+		# Generate success page (or redirect if debug not set)
+		$output = $oidc->generate_output_success_page( $params, $redirect_url,
+			$authorization_code );
+
+		# If output is undef (debug not set), redirect immediately
+		if ( !defined $output ) {
+			print $cgi->redirect(
+				-uri    => $redirect_url,
+				-status => 302,
+				-cookie => $cookie
+			);
+			exit;
+		}
+	} else {
+		# GSS_NAME is set but account not found - show error
+		$output = $oidc->generate_output_error( $params, 'invalid_request',
+			"Account '$remote_user' not found in system" );
+	}
 }
 
 # Check for valid session cookie (before login form submission)
