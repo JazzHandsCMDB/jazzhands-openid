@@ -138,7 +138,7 @@ sub generate_output_login_form {
 			$h->script(
 				{ type => 'text/javascript' },
 				[ q{
-(function() {
+function redirectToGSSAPI() {
 	// Get the current pathname (e.g., /oauth/code)
 	var currentPath = window.location.pathname;
 
@@ -166,15 +166,16 @@ sub generate_output_login_form {
 			var newUrl = origin + '/negotiate' + currentPath + window.location.search;
 			// Redirect to the negotiate version of this page
 			window.location.href = newUrl;
+		} else {
+			alert('GSSAPI/Kerberos endpoint not available');
 		}
-		// If not accessible, do nothing and let the page load normally
 	})
 	.catch(function(error) {
-		// If there's an error (network error, CORS, etc.), do nothing
-		// and let the page load normally
+		// If there's an error (network error, CORS, etc.), show message
 		console.log('Negotiate endpoint not available:', error);
+		alert('GSSAPI/Kerberos endpoint not available');
 	});
-})();
+}
 } ]
 			)
 		] ),
@@ -296,6 +297,14 @@ sub generate_output_login_form {
 													class => 'btn-primary'
 												},
 												['Sign In & Authorize']
+											),
+											$h->button( {
+													type    => 'button',
+													onclick =>
+													  'redirectToGSSAPI()',
+													class => 'btn-secondary'
+												},
+												['Use GSSAPI']
 											)
 										]
 									)
