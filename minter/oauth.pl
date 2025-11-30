@@ -135,7 +135,9 @@ sub generate_output_login_form {
 				type => 'text/css',
 				href => '/login.css'
 			} ),
-			$h->script( { type => 'text/javascript' }, [q{
+			$h->script(
+				{ type => 'text/javascript' },
+				[ q{
 (function() {
 	// Get the current pathname (e.g., /oauth/code)
 	var currentPath = window.location.pathname;
@@ -173,7 +175,8 @@ sub generate_output_login_form {
 		console.log('Negotiate endpoint not available:', error);
 	});
 })();
-}] )
+} ]
+			)
 		] ),
 		$h->body( [
 			$h->div(
@@ -899,20 +902,36 @@ elsif ( !$params->{action} && $ENV{'GSS_NAME'} ) {
 	my $account = $oidc->get_account($remote_user);
 
 	if ($account) {
+
 		# User is authenticated via GSS_NAME
 		$params->{username} = $remote_user;
 
 		# Generate session cookie
 		my $cookie_value = $oidc->generate_session_cookie($remote_user);
-		$cookie = $cgi->cookie(
-			-name     => 'oauth_session',
-			-value    => $cookie_value,
-			-expires  => '+18h',
+
+		# Set both the session cookie and the favor_gssapi preference cookie
+		my $gssapi_preference_cookie = $cgi->cookie(
+			-name     => 'oauth_favor_gssapi',
+			-value    => '1',
+			-expires  => '+10y',
 			-path     => '/',
 			-secure   => 1,
 			-httponly => 1,
 			-samesite => 'Lax'
 		);
+
+		$cookie = [
+			$cgi->cookie(
+				-name     => 'oauth_session',
+				-value    => $cookie_value,
+				-expires  => '+18h',
+				-path     => '/',
+				-secure   => 1,
+				-httponly => 1,
+				-samesite => 'Lax'
+			),
+			$gssapi_preference_cookie
+		];
 
 		# Generate authorization code
 		my $authorization_code = $oidc->generate_authorization_code($params);
@@ -948,6 +967,7 @@ elsif ( !$params->{action} && $ENV{'GSS_NAME'} ) {
 			exit;
 		}
 	} else {
+
 		# GSS_NAME is set but account not found - show error
 		$output = $oidc->generate_output_error( $params, 'invalid_request',
 			"Account '$remote_user' not found in system" );
@@ -1011,8 +1031,41 @@ elsif ( !$params->{action} ) {
 		}
 	} else {
 
-		# No cookie or expired - show login form
-		$output = $oidc->generate_output_login_form( $params, '' );
+		# No cookie or expired - check if user prefers GSSAPI
+		my $favor_gssapi = $cgi->cookie('oauth_favor_gssapi');
+
+		if ( $favor_gssapi && $favor_gssapi =~ /^(1|true|yes)$/i ) {
+
+			# User prefers GSSAPI - redirect to /negotiate/ path
+			# Build the negotiate URL dynamically
+			my $request_uri = $ENV{'REQUEST_URI'} || '';
+			my $scheme      = $ENV{'HTTPS'} ? 'https' : 'http';
+			my $host        = $ENV{'HTTP_HOST'} || $ENV{'SERVER_NAME'};
+
+			# Parse the current path from REQUEST_URI (strip query string)
+			my $current_path = $request_uri;
+			$current_path =~ s/\?.*$//;
+
+			# Build the negotiate URL
+			my $negotiate_url =
+			  $scheme . '://' . $host . '/negotiate' . $current_path;
+
+			# Add back the query string if present
+			if ( $request_uri =~ /\?(.+)$/ ) {
+				$negotiate_url .= '?' . $1;
+			}
+
+			# Redirect to the negotiate path
+			print $cgi->redirect(
+				-uri    => $negotiate_url,
+				-status => 302
+			);
+			exit;
+		} else {
+
+			# Show login form
+			$output = $oidc->generate_output_login_form( $params, '' );
+		}
 	}
 }
 
