@@ -871,6 +871,7 @@ my $params = {
 	action                => $cgi->param('action')                || '',
 	code_challenge        => $cgi->param('code_challenge')        || '',
 	code_challenge_method => $cgi->param('code_challenge_method') || '',
+	skip_gssapi           => $cgi->param('skip_gssapi')           || '',
 };
 
 # Variables to hold output and optional cookie
@@ -1041,38 +1042,71 @@ elsif ( !$params->{action} ) {
 	} else {
 
 		# No cookie or expired - check if user prefers GSSAPI
+		# Skip GSSAPI check if skip_gssapi parameter is set
+		my $skip_gssapi  = $params->{skip_gssapi};
 		my $favor_gssapi = $cgi->cookie('oauth_favor_gssapi');
 
-		if ( $favor_gssapi && $favor_gssapi =~ /^(1|true|yes)$/i ) {
+		if (  !$skip_gssapi
+			&& $favor_gssapi
+			&& $favor_gssapi =~ /^(1|true|yes)$/i )
+		{
 
-			# User prefers GSSAPI - redirect to /negotiate/ path
-			# Build the negotiate URL dynamically
-			my $request_uri = $ENV{'REQUEST_URI'} || '';
-			my $scheme      = $ENV{'HTTPS'} ? 'https' : 'http';
-			my $host        = $ENV{'HTTP_HOST'} || $ENV{'SERVER_NAME'};
+			# User prefers GSSAPI - return 401 to trigger authentication
+			# Only send 401 if GSS_NAME is not already set
+			if ( !$ENV{'GSS_NAME'} ) {
 
-			# Parse the current path from REQUEST_URI (strip query string)
-			my $current_path = $request_uri;
-			$current_path =~ s/\?.*$//;
+				# Build redirect URL with all parameters plus skip_gssapi=1
+				my $script_url =
+				  $ENV{'SCRIPT_NAME'} || $cgi->url( -absolute => 1 );
+				my @params_list;
+				push @params_list,
+				  "response_type=" . $cgi->escape( $params->{response_type} )
+				  if $params->{response_type};
+				push @params_list,
+				  "client_id=" . $cgi->escape( $params->{client_id} )
+				  if $params->{client_id};
+				push @params_list,
+				  "redirect_uri=" . $cgi->escape( $params->{redirect_uri} )
+				  if $params->{redirect_uri};
+				push @params_list, "scope=" . $cgi->escape( $params->{scope} )
+				  if $params->{scope};
+				push @params_list, "state=" . $cgi->escape( $params->{state} )
+				  if $params->{state};
+				push @params_list, "nonce=" . $cgi->escape( $params->{nonce} )
+				  if $params->{nonce};
+				push @params_list,
+				  "code_challenge=" . $cgi->escape( $params->{code_challenge} )
+				  if $params->{code_challenge};
+				push @params_list,
+				  "code_challenge_method="
+				  . $cgi->escape( $params->{code_challenge_method} )
+				  if $params->{code_challenge_method};
+				push @params_list, "skip_gssapi=1";
+				my $fallback_url =
+				  $script_url . '?' . join( '&', @params_list );
 
-			# Build the negotiate URL
-			my $negotiate_url =
-			  $scheme . '://' . $host . '/negotiate' . $current_path;
-
-			# Add back the query string if present
-			if ( $request_uri =~ /\?(.+)$/ ) {
-				$negotiate_url .= '?' . $1;
+				print $cgi->header(
+					-charset          => 'UTF-8',
+					-status           => '401 Unauthorized',
+					-type             => 'text/html',
+					-WWW_Authenticate => 'Negotiate',
+				);
+				print "\n\n";
+				print $cgi->start_html(
+					-head => $h->meta( {
+						'http-equiv' => 'refresh',
+						content      => "0;url=$fallback_url"
+					} )
+				);
+				print $h->p( [
+					'If GSSAPI authentication fails or is not configured, ',
+					$h->a( { href => $fallback_url }, ['click here'] ),
+					' to use the login form.'
+				] );
+				print $cgi->end_html;
+				exit(0);
 			}
-
-			# Redirect to the negotiate path
-			print $cgi->redirect(
-				-uri    => $negotiate_url,
-				-status => 302
-			);
-			exit;
-		} else {
-
-			# Show login form
+		} else {    # Show login form
 			$output = $oidc->generate_output_login_form( $params, '' );
 		}
 	}
