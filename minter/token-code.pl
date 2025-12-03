@@ -282,7 +282,7 @@ sub handle_token_request {
 		my $idtok = {
 			'aud'         => $decode->{client_id},
 			'sub'         => $oid,
-			'iss'         => 'https://oauth0.iad1.omniscient.com',
+			'iss'         => 'https://sso.omniscient.com',
 			'name'        => 'your mom',
 			'given_name'  => 'your',
 			'family_name' => 'mom',
