@@ -37,10 +37,47 @@ sub new {
 	my $h   = $args{h}   or die "h parameter is required";
 
 	# Optional arguments
-	my $key_path     = $args{key_path}     || '/www/auth/dance.key';
-	my $clients_file = $args{clients_file} || '/www/auth/valid-clients.json';
+	my $config_file =
+		 $args{config_file}
+	  || $ENV{'JAZZHANDS_OPENID_CONFIG'}
+	  || '/www/auth/oauth-config.json';
 	my $encrypt_password = $args{encrypt_password};
 	my $debug            = $args{debug};
+
+	# Load unified config file
+	my $config_fh = new FileHandle($config_file);
+	unless ($config_fh) {
+		$errstr = "Unable to open config file: $config_file";
+		return undef;
+	}
+	my $config_json = join( "", $config_fh->getlines() );
+	$config_fh->close;
+
+	my $j = new JSON;
+	my $config;
+	eval { $config = $j->decode($config_json); };
+	if ($@) {
+		$errstr = "Failed to parse config file: $@";
+		return undef;
+	}
+
+	# Validate required configuration keys
+	unless ( exists $config->{'valid-clients'} ) {
+		$errstr = "Missing configuration key 'valid-clients'";
+		return undef;
+	}
+	unless ( exists $config->{'key-path'} ) {
+		$errstr = "Missing configuration key 'key-path'";
+		return undef;
+	}
+	unless ( exists $config->{'default-issuer'} ) {
+		$errstr = "Missing configuration key 'default-issuer'";
+		return undef;
+	}
+
+	my $key_path = $config->{'key-path'};
+	my $clients  = $config->{'valid-clients'};
+	my $issuer   = $config->{'default-issuer'};
 
 	# Load RSA key
 	my $fh = new FileHandle($key_path);
@@ -51,30 +88,14 @@ sub new {
 	my $key = join( "", $fh->getlines() );
 	$fh->close;
 
-	# Load valid clients from JSON file
-	my $clients_fh = new FileHandle($clients_file);
-	unless ($clients_fh) {
-		$errstr = "Unable to open clients file: $clients_file";
-		return undef;
-	}
-	my $clients_json = join( "", $clients_fh->getlines() );
-	$clients_fh->close;
-
-	my $j = new JSON;
-	my $clients;
-	eval { $clients = $j->decode($clients_json); };
-	if ($@) {
-		$errstr = "Failed to parse clients file: $@";
-		return undef;
-	}
-
-	$self->{cgi}          = $cgi;
-	$self->{h}            = $h;
-	$self->{key}          = $key;
-	$self->{key_path}     = $key_path;
-	$self->{clients}      = $clients;
-	$self->{clients_file} = $clients_file;
-	$self->{debug}        = $debug;
+	$self->{cgi}         = $cgi;
+	$self->{h}           = $h;
+	$self->{key}         = $key;
+	$self->{key_path}    = $key_path;
+	$self->{clients}     = $clients;
+	$self->{config_file} = $config_file;
+	$self->{_issuer}     = $issuer;
+	$self->{debug}       = $debug;
 
 	# Handle encrypt_password option
 	if ($encrypt_password) {
